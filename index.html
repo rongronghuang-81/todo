@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>To-Do</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #ffffff; --fg: #111111; --muted: #666666; --border: #dddddd;
+    --badge-bg: #e8eefc; --badge-fg: #223344; --overdue: #c0392b; --done: #888888;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #1b1d21; --fg: #e8e8e8; --muted: #a0a4ab; --border: #3a3d44;
+    --badge-bg: #2d3a5c; --badge-fg: #dbe4ff; --overdue: #ff7b6b; --done: #7d818a;
+  }
+  body { font-family: system-ui, sans-serif; max-width: 520px; margin: 40px auto; padding: 0 16px;
+         background: var(--bg); color: var(--fg); }
+  h1 { text-align: center; margin: 0; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  header h1 { flex: 1; }
+  header .spacer { width: 90px; }
+  #theme { width: 90px; padding: 4px; font-size: 14px; }
+  form { display: flex; flex-wrap: wrap; gap: 8px; }
+  input[type=text], input[type=date], select { padding: 8px; font-size: 16px; }
+  #input { flex: 1 1 100%; }
+  #category { flex: 1; min-width: 0; }
+  button { padding: 8px 12px; font-size: 16px; cursor: pointer; }
+  ul { list-style: none; padding: 0; }
+  li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .meta { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 8px; font-size: 13px; color: var(--muted); }
+  .cat { background: var(--badge-bg); color: var(--badge-fg); padding: 1px 8px; border-radius: 10px; white-space: nowrap; }
+  .overdue { color: var(--overdue); font-weight: 600; }
+  li.done .title { text-decoration: line-through; color: var(--done); }
+  li.done .overdue { color: var(--done); font-weight: normal; }
+  .editrow { display: flex; flex-wrap: wrap; gap: 6px; }
+  .editrow input, .editrow select { padding: 4px; font-size: 14px; }
+  .editrow input.edit-text { flex: 1 1 100%; font-size: 16px; }
+  .editrow input.edit-cat { flex: 1; min-width: 0; }
+  #count { color: var(--muted); font-size: 14px; }
+  @media (max-width: 420px) {
+    #category, #due { flex: 1 1 calc(50% - 4px); min-width: 0; box-sizing: border-box; }
+    form button[type=submit] { flex: 1 1 100%; }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <span class="spacer"></span>
+    <h1>To-Do</h1>
+    <select id="theme" aria-label="Color mode">
+      <option value="light">☀ Light</option>
+      <option value="dark">🌙 Dark</option>
+    </select>
+  </header>
+  <form id="form">
+    <input type="text" id="input" placeholder="What needs doing?" autofocus>
+    <select id="category" aria-label="Category"></select>
+    <input type="date" id="due" aria-label="Due date">
+    <button type="submit">Add</button>
+  </form>
+  <ul id="list"></ul>
+  <p id="count"></p>
+
+<script>
+  let todos = [];
+  try { todos = JSON.parse(localStorage.getItem("todos")) || []; } catch (e) {}
+
+  const list = document.getElementById("list");
+  const input = document.getElementById("input");
+  const category = document.getElementById("category");
+  const due = document.getElementById("due");
+  const count = document.getElementById("count");
+  const themeSelect = document.getElementById("theme");
+
+  const CATEGORIES = ["Class", "Home", "Work", "Personal", "Others"];
+
+  function fillCategories(select, selected) {
+    select.innerHTML = "";
+    for (const name of CATEGORIES) {
+      const o = document.createElement("option");
+      o.value = o.textContent = name;
+      select.appendChild(o);
+    }
+    // Old items with a category outside the fixed list count as "Others".
+    select.value = CATEGORIES.includes(selected) ? selected : "Others";
+  }
+
+  // Theme: saved choice, otherwise follow the system setting.
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    themeSelect.value = theme;
+  }
+  let savedTheme = null;
+  try { savedTheme = localStorage.getItem("theme"); } catch (e) {}
+  applyTheme(savedTheme === "dark" || savedTheme === "light" ? savedTheme
+    : (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
+  themeSelect.addEventListener("change", () => {
+    applyTheme(themeSelect.value);
+    try { localStorage.setItem("theme", themeSelect.value); } catch (e) {}
+  });
+
+  function save() {
+    try { localStorage.setItem("todos", JSON.stringify(todos)); } catch (e) {}
+  }
+
+  // Today as YYYY-MM-DD in local time (same format as <input type="date">).
+  function today() {
+    const d = new Date();
+    const p = n => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+
+  function add(text, cat, dueDate) {
+    text = text.trim();
+    if (!text) return;
+    todos.push({ id: Date.now(), text, category: cat, due: dueDate || "", done: false });
+    save(); render();
+  }
+
+  function toggle(id) {
+    const t = todos.find(t => t.id === id);
+    if (t) t.done = !t.done;
+    save(); render();
+  }
+
+  let editingId = null;
+
+  function startEdit(id) {
+    editingId = id;
+    render();
+    const box = list.querySelector("input.edit-text");
+    if (box) { box.focus(); box.select(); }
+  }
+
+  function commitEdit(li) {
+    const id = Number(li.dataset.id);
+    if (editingId !== id) return;
+    editingId = null;
+    const text = li.querySelector(".edit-text").value.trim();
+    const t = todos.find(t => t.id === id);
+    if (t) {
+      if (text) t.text = text;   // empty text keeps the old value
+      t.category = li.querySelector(".edit-cat").value;
+      t.due = li.querySelector(".edit-due").value;
+    }
+    save(); render();
+  }
+
+  function cancelEdit() {
+    editingId = null;
+    render();
+  }
+
+  function remove(id) {
+    todos = todos.filter(t => t.id !== id);
+    save(); render();
+  }
+
+  function field(type, className, value, extra) {
+    const el = document.createElement("input");
+    el.type = type;
+    el.className = className;
+    el.value = value || "";
+    if (extra) Object.assign(el, extra);
+    return el;
+  }
+
+  function render() {
+    list.innerHTML = "";
+    const now = today();
+
+    for (const t of todos) {
+      const li = document.createElement("li");
+      li.dataset.id = t.id;
+      if (t.done) li.className = "done";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = t.done;
+
+      const main = document.createElement("div");
+      main.className = "main";
+
+      if (t.id === editingId) {
+        const row = document.createElement("div");
+        row.className = "editrow";
+        const catSelect = document.createElement("select");
+        catSelect.className = "edit-cat";
+        fillCategories(catSelect, t.category);
+        row.append(
+          field("text", "edit-text", t.text),
+          catSelect,
+          field("date", "edit-due", t.due)
+        );
+        main.appendChild(row);
+      } else {
+        const title = document.createElement("span");
+        title.className = "title";
+        title.textContent = t.text;
+        title.title = "Double-click to edit";
+        main.appendChild(title);
+
+        if (t.category || t.due) {
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          if (t.category) {
+            const c = document.createElement("span");
+            c.className = "cat";
+            c.textContent = t.category;
+            meta.appendChild(c);
+          }
+          if (t.due) {
+            const d = document.createElement("span");
+            const overdue = !t.done && t.due < now;
+            d.className = "due" + (overdue ? " overdue" : "");
+            d.textContent = "Due " + t.due + (overdue ? " (overdue)" : "");
+            meta.appendChild(d);
+          }
+          main.appendChild(meta);
+        }
+      }
+
+      const editBtn = document.createElement("button");
+      editBtn.textContent = "✎";
+      editBtn.className = "edit-btn";
+      editBtn.setAttribute("aria-label", "Edit");
+
+      const del = document.createElement("button");
+      del.textContent = "✕";
+      del.className = "del";
+      del.setAttribute("aria-label", "Delete");
+
+      li.append(cb, main, editBtn, del);
+      list.appendChild(li);
+    }
+
+    const left = todos.filter(t => !t.done).length;
+    count.textContent = left + (left === 1 ? " item left" : " items left");
+  }
+
+  document.getElementById("form").addEventListener("submit", e => {
+    e.preventDefault();
+    add(input.value, category.value, due.value);
+    input.value = "";
+    due.value = "";
+    input.focus();
+  });
+
+  list.addEventListener("click", e => {
+    const li = e.target.closest("li");
+    if (!li) return;
+    const id = Number(li.dataset.id);
+    if (e.target.classList.contains("del")) remove(id);
+    else if (e.target.classList.contains("edit-btn")) startEdit(id);
+    else if (e.target.type === "checkbox") toggle(id);
+  });
+
+  list.addEventListener("dblclick", e => {
+    const li = e.target.closest("li");
+    if (li && e.target.classList.contains("title")) startEdit(Number(li.dataset.id));
+  });
+
+  list.addEventListener("keydown", e => {
+    const li = e.target.closest("li");
+    if (!li || !e.target.closest(".editrow")) return;
+    if (e.key === "Enter") commitEdit(li);
+    else if (e.key === "Escape") cancelEdit();
+  });
+
+  // Save when focus leaves the edit row (but not when moving between its fields).
+  list.addEventListener("focusout", e => {
+    const row = e.target.closest(".editrow");
+    if (!row || row.contains(e.relatedTarget)) return;
+    commitEdit(e.target.closest("li"));
+  });
+
+  fillCategories(category, "Others");
+  render();
+</script>
+</body>
+</html>
